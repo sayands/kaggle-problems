@@ -215,3 +215,112 @@ history = model.fit(x_train, y_train,
                     epochs=epochs,
                     batch_size=batch_size,
                     callbacks=[early_stopping, model_checkpoint, reduce_lr])
+
+model = load_model('./keras.model')
+
+# =========================================================================================================
+# Predictions for validation set
+preds_valid = model.predict(x_valid).reshape(-1, img_size_target, img_size_target)
+preds_valid = np.array([downsample(x) for x in preds_valid])
+y_valid_ori = np.array([train_df.loc[idx].masks for idx in ids_valid])
+
+# Visualising Predictions
+max_images = 60
+grid_width = 15
+grid_height = int(max_images / grid_width)
+fig, axs = plt.subplots(grid_height, grid_width, figsize = (grid_width, grid_height))
+for i, idx in enumerate(ids_valid[:max_images]):
+  img = train_df.loc[idx].images
+  mask = train_df.loc[idx].masks
+  pred = preds_valid[i]
+  ax = axs[int(i / grid_width), i % grid_width]
+  ax.imshow(img, cmap = 'Greys')
+  ax.imshow(mask, alpha = 0.3, cmap ='Greens')
+  ax.imshow(pred, alpha = 0.3, cmap = 'OrRd')
+  ax.text(1, img_size_ori - 1, train_df.loc[idx].z, color = 'black')
+  ax.text(img_size_ori - 1, 1, round(train_df.loc[idx].coverage, 2), color = 'black', ha = 'right', va = 'top')
+  ax.text(1, 1, train_df.loc[idx].coverage_class, color = 'black', ha = 'left', va = 'top')
+  ax.set_yticklabels([])
+  ax.set_xticklabels([])
+  
+plt.suptitle("Green: salt, Red: prediction, Top-left: Coverage Class, Top-right : salt coverage, Bottom-Left: Depth")
+
+# =========================================================================================================
+# Scoring and threshold optimization using IoU
+def iou_metric(y_true_in, y_pred_in, print_table = False):
+  labels = y_true_in
+  y_pred = y_pred_in
+  
+  true_objects = 2
+  pred_objects = 2
+  
+  intersection = np.histogram2d(labels.flatten(), y_pred.flatten(), bins = (true_objects, pred_objects))[0]
+  
+  # Compute areas(needed for finding the union between all objects)
+  area_true = np.histogram(labels, bins = true_objects)[0]
+  area_pred = np.histogram(y_pred, bins = pred_objects)[0]
+  area_true = np.expand_dims(area_true, -1)
+  area_pred = np.expand_dims(area_pred, 0)
+  
+  # Compute Union
+  union = area_true + area_pred - intersection
+  
+  # Exclude background from analysis
+  intersection = intersection[1:, 1:]
+  union = union[1:, 1:]
+  union[union == 0] = 1e-9
+  
+  # Compute Intersection over Union
+  iou = intersection / union
+  
+  # Precision helper function
+  def precision_at(threshold, iou):
+    matches = iou > threshold
+    true_positives = np.sum(matches, axis = 1) == 1  # Correct Objects
+    false_positives = np.sum(matches, axis = 0) == 0 # Missed Objects
+    false_negatives = np.sum(matches, axis = 1) == 0 # Extra objects
+    tp, fp, fn = np.sum(true_positives), np.sum(false_positives), np.sum(false_negatives)
+    return tp, fp, fn
+  
+  # Loop over IoU thresholds
+  prec = []
+  if print_table:
+    print("Thresh\tTP\tFP\tFN\tPrec.")
+  for t in np.arange(0.5, 1.0, 0.05):
+    tp, fp, fn = precision_at(t, iou)
+    if (tp + fp + fn) > 0:
+      p = tp /  (tp + fp + fn)
+    else:
+      p = 0
+    if print_table:
+      print("{:1.3f}\t{}\t{}\t{}\t{:1.3f}".format(t, tp, fp, fn, p))
+    prec.append(p)
+  
+  if print_table:
+    print("AP\t-\t-\t-\t{1.3f}".format(np.mean(prec)))
+  
+  return np.mean(prec)
+
+def iou_metric_batch(y_true_in, y_pred_in):
+  batch_size = y_true_in.shape[0]
+  metric = []
+  for batch in range(batch_size):
+    value = iou_metric(y_true_in[batch], y_pred_in[batch])
+    metric.append(value)
+  return np.mean(metric)    
+
+thresholds = np.linspace(0, 1, 50)
+ious = np.array([iou_metric_batch(y_valid_ori, np.int32(preds_valid > threshold)) for threshold in thresholds])
+
+threshold_best_index = np.argmax(ious[9:-10]) + 9
+iou_best = ious[threshold_best_index]
+threshold_best = thresholds[threshold_best_index]
+
+# Plotting the best threshold
+plt.plot(thresholds, ious)
+plt.plot(threshold_best, iou_best, "xr", label="Best threshold")
+plt.xlabel("Threshold")
+plt.ylabel("IoU")
+plt.title("Threshold vs IoU ({}, {})".format(threshold_best, iou_best))
+plt.legend()
+
