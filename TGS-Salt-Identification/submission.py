@@ -188,3 +188,30 @@ model.compile(loss = 'binary_crossentropy', optimizer = 'adam', metrics = ['accu
 print(model.summary())
 
 # =========================================================================================================
+# Data Augmentation
+x_train = np.append(x_train, [np.fliplr(x) for x in x_train], axis = 0)
+y_train = np.append(y_train, [np.fliplr(y) for y in y_train], axis = 0)
+
+# Visualising Augmented Images
+fig, axs = plt.subplots(2, 10, figsize = (15, 3))
+for i in range(10):
+  axs[0][i].imshow(x_train[i].squeeze(), cmap = 'Greys')
+  axs[0][i].imshow(y_train[i].squeeze(), cmap = 'Greens', alpha = 0.3)
+  axs[1][i].imshow(x_train[int(len(x_train)/2 + i)].squeeze(), cmap = 'Greys')
+  axs[1][i].imshow(y_train[int(len(y_train)/2 + i)].squeeze(), cmap = 'Greens', alpha = 0.3)
+  
+fig.suptitle("Top row: original images, bottom row: augmented images")
+# =========================================================================================================
+# Training the model
+early_stopping = EarlyStopping(patience=10, verbose=1)
+model_checkpoint = ModelCheckpoint("./keras.model", save_best_only=True, verbose=1)
+reduce_lr = ReduceLROnPlateau(factor=0.1, patience=5, min_lr=0.00001, verbose=1)
+
+epochs = 200
+batch_size = 32
+
+history = model.fit(x_train, y_train,
+                    validation_data=[x_valid, y_valid], 
+                    epochs=epochs,
+                    batch_size=batch_size,
+                    callbacks=[early_stopping, model_checkpoint, reduce_lr])
